@@ -39,12 +39,23 @@ void init_play(uint8_t world_id, world_t *world, player_t &player) {
     progress_bar("Initializing shadows...");
     // Initialize the shadow triangle grid with data from the world
     for(int y = 0; y < WORLD_HEIGHT; y++) {
-        fill_progress_bar(y, WORLD_HEIGHT + WORLD_HEIGHT);
-        for(int z = 0; z < WORLD_SIZE; z++) {
-            for(int x = 0; x < WORLD_SIZE; x++) {
-                if(world->blocks[y][x][z] > WATER) {
-                    world->set_block_shadow(x, y, z);
-                }
+        if((y & 3) == 0) {
+            fill_progress_bar(y, WORLD_HEIGHT + WORLD_HEIGHT);
+        }    
+    
+        uint8_t (*layer)[WORLD_SIZE] = world->blocks[y];
+    
+        for(int x = 0; x < WORLD_SIZE; x++) {
+            uint8_t *col = layer[x];
+    
+            for(int z = 0; z < WORLD_SIZE; z++) {
+                uint8_t id = col[z];
+    
+                // Skip AIR and WATER fast
+                if(id <= WATER) continue;
+    
+                // Only solid blocks cast shadows
+                world->set_block_shadow(x, y, z);
             }
         }
     }
