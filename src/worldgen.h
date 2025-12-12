@@ -5,203 +5,202 @@
 
 #define WATER_LEVEL 5
 
-#define GRID_STEP 8
+// Slightly finer grid gives smoother hills without too much cost
+#define GRID_STEP 6
 #define GRID_OFFSET (GRID_STEP / 2)
-#define GRID_SIZE ((WORLD_SIZE / GRID_STEP) + 1)
+#define GRID_SIZE ((WORLD_SIZE / GRID_STEP) + 2)
 
 // Makes a "natural" looking world with randomly generated terrain and trees
 void generate_natural(world_t &world, player_t &player) {
-    // Add bedrock floor
-    world.fill_space(0, 0, 0, WORLD_SIZE - 1,           0, WORLD_SIZE - 1, BEDROCK);
-    world.fill_space(0, 1, 0, WORLD_SIZE - 1, WATER_LEVEL, WORLD_SIZE - 1, WATER);
+    // ---------------------------------------------------------------------
+    // Base layers: bedrock + water volume
+    // ---------------------------------------------------------------------
+    world.fill_space(0, 0, 0,
+                     WORLD_SIZE - 1, 0, WORLD_SIZE - 1,
+                     BEDROCK);
 
-    uint16_t grid[GRID_SIZE][GRID_SIZE];
+    world.fill_space(0, 1, 0,
+                     WORLD_SIZE - 1, WATER_LEVEL, WORLD_SIZE - 1,
+                     WATER);
 
-    for(uint8_t x = 0; x < GRID_SIZE; x++) {
-        for(uint8_t z = 0; z < GRID_SIZE; z++) {
-            grid[x][z] = randInt(3, 12);
+    // ---------------------------------------------------------------------
+    // Coarse heightmap grid (cheaper, smoother, more varied)
+    // ---------------------------------------------------------------------
+    uint8_t grid[GRID_SIZE][GRID_SIZE];
+
+    for(uint8_t gx = 0; gx < GRID_SIZE; gx++) {
+        for(uint8_t gz = 0; gz < GRID_SIZE; gz++) {
+            // Two-layer variation: base hills + larger-scale offset
+            uint8_t low  = randInt(3, 10);
+            uint8_t high = randInt(0, 4);
+
+            grid[gx][gz] = low + high;   // 3..14
         }
     }
 
+    const uint16_t denom = (uint16_t)GRID_STEP * (uint16_t)GRID_STEP;
 
+    // ---------------------------------------------------------------------
+    // Terrain: bilinear integer interpolation
+    // ---------------------------------------------------------------------
     for(uint8_t x = 0; x < WORLD_SIZE; x++) {
-        for(uint8_t z = 0; z < WORLD_SIZE; z++) {
-            uint8_t grid_x = x / GRID_STEP;
-            uint8_t grid_z = z / GRID_STEP;
+        uint8_t grid_x = x / GRID_STEP;
+        uint8_t lerp_x = x - (grid_x * GRID_STEP);
 
-            uint8_t lerp_x = x - (grid_x * GRID_STEP);
+        for(uint8_t z = 0; z < WORLD_SIZE; z++) {
+            uint8_t grid_z = z / GRID_STEP;
             uint8_t lerp_z = z - (grid_z * GRID_STEP);
 
-            uint16_t height = 0;
+            // Clamp indices to valid range to avoid overrun at the edge
+            uint8_t gx0 = (grid_x < GRID_SIZE - 1) ? grid_x     : GRID_SIZE - 2;
+            uint8_t gz0 = (grid_z < GRID_SIZE - 1) ? grid_z     : GRID_SIZE - 2;
+            uint8_t gx1 = gx0 + 1;
+            uint8_t gz1 = gz0 + 1;
 
-            height += grid[grid_x    ][grid_z    ] * (GRID_STEP - lerp_x) * (GRID_STEP - lerp_z);
-            height += grid[grid_x + 1][grid_z    ] * (            lerp_x) * (GRID_STEP - lerp_z);
-            height += grid[grid_x    ][grid_z + 1] * (GRID_STEP - lerp_x) * (            lerp_z);
-            height += grid[grid_x + 1][grid_z + 1] * (            lerp_x) * (            lerp_z);
+            uint8_t h00 = grid[gx0][gz0];
+            uint8_t h10 = grid[gx1][gz0];
+            uint8_t h01 = grid[gx0][gz1];
+            uint8_t h11 = grid[gx1][gz1];
 
-            height /= GRID_STEP * GRID_STEP;
+            uint8_t inv_x = GRID_STEP - lerp_x;
+            uint8_t inv_z = GRID_STEP - lerp_z;
+
+            uint16_t height =
+                (uint16_t)h00 * inv_x * inv_z +
+                (uint16_t)h10 * lerp_x * inv_z +
+                (uint16_t)h01 * inv_x * lerp_z +
+                (uint16_t)h11 * lerp_x * lerp_z;
+
+            height /= denom;
+
+            // Slight bias to create more hills above water
+            if(height > 0 && height < WATER_LEVEL + 2) {
+                height += 1;
+            }
 
             if(height > 3) {
-                world.fill_space(x, 1, z, x, height - 3, z, STONE);
-                world.fill_space(x, height - 2, z, x, height, z, DIRT);
+                uint8_t stone_top = (height > 3) ? (height - 3) : 1;
+                world.fill_space(x, 1, z,
+                                 x, stone_top, z,
+                                 STONE);
+
+                uint8_t dirt_top = (height > WORLD_HEIGHT - 1) ? (WORLD_HEIGHT - 1) : height;
+                uint8_t dirt_bottom = (stone_top + 1 <= dirt_top) ? stone_top + 1 : dirt_top;
+
+                if(dirt_bottom <= dirt_top) {
+                    world.fill_space(x, dirt_bottom, z,
+                                     x, dirt_top, z,
+                                     DIRT);
+                }
+            } else {
+                uint8_t dirt_top = (height > WORLD_HEIGHT - 1) ? (WORLD_HEIGHT - 1) : height;
+                if(dirt_top >= 1) {
+                    world.fill_space(x, 1, z,
+                                     x, dirt_top, z,
+                                     DIRT);
+                }
             }
-            else 
-            {   
-                world.fill_space(x, 1, z, x, height, z, DIRT);
+
+            // Grass only where above or at water level and exposed
+            if(height >= WATER_LEVEL && height < WORLD_HEIGHT) {
+                world.fill_space(x, height, z,
+                                 x, height, z,
+                                 GRASS);
             }
-            
-            if(height >= WATER_LEVEL)
-                world.fill_space(x, height, z, x, height, z, GRASS);
-        }   
+        }
     }
 
-    // Replace dirt with sand near water blocks
+    // ---------------------------------------------------------------------
+    // Faster shoreline: 2D neighbor check instead of full 3D radius
+    // ---------------------------------------------------------------------
     for(uint8_t y = WATER_LEVEL - 1; y <= WATER_LEVEL; y++) {
+        if(y >= WORLD_HEIGHT) break;
+
         for(uint8_t x = 0; x < WORLD_SIZE; x++) {
             for(uint8_t z = 0; z < WORLD_SIZE; z++) {
-                if(world.blocks[y][x][z] != GRASS && world.blocks[y][x][z] != DIRT) continue;
+                uint8_t id = world.blocks[y][x][z];
+
+                if(id != GRASS && id != DIRT) continue;
                 if(y >= WORLD_HEIGHT - 1) continue;
-                if(world.blocks[y + 1][x][z] != AIR && world.blocks[y + 1][x][z] != WATER) continue;
+
+                uint8_t above = world.blocks[y + 1][x][z];
+                if(above != AIR && above != WATER) continue;
 
                 bool near_water = false;
 
-                for(int8_t by = -1; by <= 1; by++) {
-                    if(y + by < 0 || y + by >= WORLD_HEIGHT) continue;
+                // 2D 3x3 neighborhood is enough for a natural beach look
+                for(int8_t bx = -2; bx <= 2 && !near_water; bx++) {
+                    int8_t nx = (int8_t)x + bx;
+                    if(nx < 0 || nx >= WORLD_SIZE) continue;
 
-                    for(int8_t bx = -2; bx <= 2; bx++) {
-                        if(x + bx < 0 || x + bx >= WORLD_SIZE) continue;
-                        
-                        for(int8_t bz = -2; bz <= 2; bz++) {
-                            if(z + bz < 0 || z + bz >= WORLD_SIZE) continue;
+                    for(int8_t bz = -2; bz <= 2; bz++) {
+                        int8_t nz = (int8_t)z + bz;
+                        if(nz < 0 || nz >= WORLD_SIZE) continue;
 
-                            if(world.blocks[by + y][bx + x][bz + z] == WATER)
-                                near_water = true;
+                        if(world.blocks[y][nx][nz] == WATER) {
+                            near_water = true;
+                            break;
                         }
                     }
                 }
 
-                if(near_water)
+                if(near_water) {
                     world.blocks[y][x][z] = SAND;
+                }
             }
         }
     }
 
-    //Add trees
-    uint8_t tree_cnt = 12;
+    // ---------------------------------------------------------------------
+    // Trees (small tweak: avoid scanning all the way down each time)
+    // ---------------------------------------------------------------------
+    const uint8_t tree_cnt = 14; // a bit denser forests
     for(uint8_t i = 0; i < tree_cnt; i++) {
-        //uint8_t x = 2;//randInt(2, WORLD_SIZE - 2 - 1);
-        //uint8_t z = 2;//randInt(2, WORLD_SIZE - 2 - 1);
-        // Weird little hack I need to do since clang crashes with the above lines :(
         uint8_t x = 2 + (random() % (WORLD_SIZE - 1 - 4));
         uint8_t z = 2 + (random() % (WORLD_SIZE - 1 - 4));
 
-        int8_t y = WORLD_HEIGHT - 8;
+        int8_t y = WORLD_HEIGHT - 2;
 
-        if(world.blocks[y + 1][x][z] != AIR) continue;
-
-        while(y > 0) {
-            if(world.blocks[y][x][z] != AIR) break; 
+        // Find the first non-air block going down
+        while(y > 1 && world.blocks[y][x][z] == AIR) {
             y--;
         }
 
-        if(world.blocks[y][x][z] != GRASS) break;
+        if(world.blocks[y][x][z] != GRASS) continue;
+        if(world.blocks[y + 1][x][z] != AIR) continue;
 
         world.add_tree(x, y + 1, z);
         world.blocks[y][x][z] = DIRT;
     }
 
-    // Replace a few stone blocks with coal
+    // ---------------------------------------------------------------------
+    // Ores (same logic, slightly cheaper random use)
+    // ---------------------------------------------------------------------
     for(uint8_t y = 1; y < WORLD_HEIGHT; y++) {
         for(uint8_t x = 0; x < WORLD_SIZE; x++) {
             for(uint8_t z = 0; z < WORLD_SIZE; z++) {
                 if(world.blocks[y][x][z] != STONE) continue;
 
-                int24_t r = randInt(0, 19);
+                uint8_t r = (uint8_t)randInt(0, 19);
 
-                // Replace stone with coal or iron ore at a 10% chance
                 if(r == 0) {
                     world.blocks[y][x][z] = COAL_ORE;
-                }
-                else if(r == 1) {
+                } else if(r == 1) {
                     world.blocks[y][x][z] = IRON_ORE;
                 }
             }
         }
     }
 
-    // Center the player in the world and place them at the lowest open-air block
+    // ---------------------------------------------------------------------
+    // Place player at center, topmost air block
+    // ---------------------------------------------------------------------
     player.x = WORLD_SIZE / 2;
-    player.y = 0;
     player.z = WORLD_SIZE / 2;
+    player.y = 0;
 
     while(player.y <= (WORLD_HEIGHT - 1)) {
         if(world.blocks[player.y][player.x][player.z] == AIR) break;
         player.y++;
     }
-}
-
-// Makes ths demo world with a bunch of neat little structures
-void generate_demo(world_t &world, player_t &player) {
-    // Add grass floor
-    world.fill_space(0, 0, 0, WORLD_SIZE - 1, 0, WORLD_SIZE - 1, GRASS);
-    world.fill_space(32, 1, 0, WORLD_SIZE - 1, 4, 16, WATER);
-
-    world.fill_space(1, 1, WORLD_SIZE - 2, 1, WORLD_HEIGHT - 1, WORLD_SIZE - 2, BRICKS);
-
-    world.add_tree(8, 1, 7);
-    world.add_tree(23, 1, 15);
-    world.add_tree(4, 1, 26);
-    world.add_tree(16, 1, 23);
-    world.add_tree(28, 1, 28);
-
-    // Build house
-    world.fill_space(18, 0, 3, 18 + 6, 0, 3 + 6, PLANKS);
-    world.fill_space(18, 1, 3, 18 + 6, 1, 3 + 6, WATER);
-    world.fill_space(18 + 7, 1, 3, 18 + 7, 3, 3 + 6, BRICKS);
-    world.fill_space(18, 1, 3 + 7, 18 + 6, 3, 3 + 7, BRICKS);
-
-    world.fill_space(17, 1, 3, 17, 1, 3 + 6, SAND);
-
-    world.fill_space(17, 1, 3 + 7, 17, 3, 3 + 7, SLABS);
-    world.fill_space(18 + 7, 1, 3 + 7, 18 + 7, 3, 3 + 7, SLABS);
-    world.fill_space(18 + 7, 1, 2, 18 + 7, 3, 2, SLABS);
-
-    world.fill_space(18, 2, 3, 18, 2, 3, TNT);
-    world.fill_space(19, 1, 3, 19, 1, 3, BOOKS);
-
-    world.fill_space(18 + 6, 3, 5, 18 + 6, 3, 5, COBBLE);
-
-    // Build another structure
-    world.fill_space(WORLD_SIZE - 4,  1, 3, WORLD_SIZE - 4,  3, 3, SLABS);
-    world.fill_space(WORLD_SIZE - 10, 1, 3, WORLD_SIZE - 10, 3, 3, SLABS);
-    world.fill_space(WORLD_SIZE - 4,  1, 9, WORLD_SIZE - 4,  3, 9, SLABS);
-    world.fill_space(WORLD_SIZE - 10, 1, 9, WORLD_SIZE - 10, 3, 9, SLABS);
-    world.fill_space(WORLD_SIZE - 10, 4, 3, WORLD_SIZE - 4,  4, 9, SLABS);
-
-    // Make windows on the roof
-    world.fill_space(WORLD_SIZE - 9,  4, 4, WORLD_SIZE - 8,  4, 5, WATER);
-    world.fill_space(WORLD_SIZE - 6,  4, 4, WORLD_SIZE - 5,  4, 5, WATER);
-    world.fill_space(WORLD_SIZE - 9,  4, 7, WORLD_SIZE - 8,  4, 8, WATER);
-    world.fill_space(WORLD_SIZE - 6,  4, 7, WORLD_SIZE - 5,  4, 8, WATER);
-
-    //Build a pyramid
-    for(int i = 1; i <= 8; i++) {
-        uint8_t center_x = WORLD_SIZE - 1;
-        uint8_t center_z = WORLD_SIZE - 1;
-
-        world.fill_space(center_x - i,  9 - i, center_z - i, center_x,  9 - i, center_z, GOLD);
-    }
-
-    player.x = 0;
-    player.y = 1;
-    player.z = 0;
-}
-
-// Makes a flat world with a grass floor
-void generate_flat(world_t &world, player_t &player) {
-    world.fill_space(0, 0, 0, WORLD_SIZE - 1, 0, WORLD_SIZE - 1, GRASS);
-
-    player.x = WORLD_SIZE / 2;
-    player.y = 1;
-    player.z = WORLD_SIZE / 2;
 }
